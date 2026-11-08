@@ -72,6 +72,10 @@ DEFINE_uint64(entry_address, -1,
 DEFINE_string(bytes, "", "Hex-encoded byte string to lift.");
 
 DEFINE_string(
+    semantics_dir, "",
+    "Path to directory containing architecture semantics bitcode files.");
+
+DEFINE_string(
     ir_pre_out, "",
     "Path to the file where the LLVM IR (before optimization) should be saved");
 
@@ -345,7 +349,12 @@ int main(int argc, char *argv[]) {
     return EXIT_FAILURE;
   }
 
-  std::unique_ptr<llvm::Module> module(remill::LoadArchSemantics(arch.get()));
+  std::vector<std::filesystem::path> sem_dirs;
+  if (!FLAGS_semantics_dir.empty()) {
+    sem_dirs.push_back(FLAGS_semantics_dir);
+  }
+  std::unique_ptr<llvm::Module> module(
+      remill::LoadArchSemantics(arch.get(), sem_dirs));
 
   const auto mem_ptr_type = arch->MemoryPointerType();
 

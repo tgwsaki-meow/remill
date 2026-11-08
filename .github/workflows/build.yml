@@ -1,5 +1,12 @@
 name: Build
-on: [push, pull_request]
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
 
 # Automatically cancel previous runs of this workflow on the same branch
 concurrency:
@@ -9,7 +16,7 @@ concurrency:
 jobs:
   linux:
     # Skip building pull requests from the same repository
-    if: ${{ github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) }}
     runs-on: ubuntu-24.04
     # We use a clean container to avoid LLVM conflicts on the GH runner images
     container:
@@ -18,12 +25,9 @@ jobs:
       fail-fast: false
       matrix:
         llvm:
-          - "17"
           - "18"
-          - "19"
           - "20"
           - "21"
-          - "22"
     steps:
       - name: Install LLVM and build tools
         run: |
@@ -39,6 +43,8 @@ jobs:
             python3-pip \
             python3-setuptools \
             python3-venv \
+            tar \
+            gzip \
             git
           wget https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
@@ -51,7 +57,7 @@ jobs:
           echo "CXX=clang++-${{ matrix.llvm }}" >> $GITHUB_ENV
 
       - name: Checkout
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        uses: actions/checkout@v4
 
       - name: Add workspace as safe directory (necessary for docker)
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -93,6 +99,98 @@ jobs:
           cmake --build build --target test_dependencies
           env CTEST_OUTPUT_ON_FAILURE=1 cmake --build build --target test
 
+      - name: Package standalone distribution
+        run: |
+          # Copy sleigh spec files from dependencies/install if present
+          if [ -d dependencies/install/share/sleigh ]; then
+            mkdir -p install/share/sleigh
+            cp -r dependencies/install/share/sleigh/* install/share/sleigh/ || true
+          fi
+          # Also merge dependencies headers and libraries (gflags, glog, xed, sleigh)
+          if [ -d dependencies/install/include ]; then
+            cp -rn dependencies/install/include/* install/include/ || true
+          fi
+          if [ -d dependencies/install/lib ]; then
+            cp -rn dependencies/install/lib/* install/lib/ || true
+          fi
+
+          # Generic symlink so user can just run ./bin/remill-lift
+          cd install/bin
+          ln -sf remill-lift-${{ matrix.llvm }} remill-lift
+          cd ../..
+
+          PKG_NAME="remill-v6.0.1-linux-x86_64-llvm${{ matrix.llvm }}"
+          mkdir -p dist
+          cp -r install dist/${PKG_NAME}
+          tar -czvf ${PKG_NAME}.tar.gz -C dist ${PKG_NAME}
+          sha256sum ${PKG_NAME}.tar.gz > ${PKG_NAME}.tar.gz.sha256
+
+      - name: Test unprivileged standalone execution
+        run: |
+          PKG_NAME="remill-v6.0.1-linux-x86_64-llvm${{ matrix.llvm }}"
+          mkdir -p /tmp/test-nonroot
+          tar -xzf ${PKG_NAME}.tar.gz -C /tmp/test-nonroot
+          STANDALONE_BIN="/tmp/test-nonroot/${PKG_NAME}/bin/remill-lift"
+          echo "Testing unprivileged standalone binary from /tmp..."
+          $STANDALONE_BIN --arch amd64 --ir_out /dev/stdout --bytes c704ba01000000
+          $STANDALONE_BIN --arch aarch64 --ir_out /dev/stdout --address 0x400544 --bytes FD7BBFA90000009000601891FD030091B7FFFF97E0031F2AFD7BC1A8C0035FD6
+          $STANDALONE_BIN --arch aarch32 --ir_out /dev/stderr --bytes 0cd04de208008de504108de500208de508309de504009de500109de5903122e0c20fa0e110109fe5001091e5002081e5040081e50cd08de21eff2fe14000000000000000
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: remill-v6.0.1-linux-x86_64-llvm${{ matrix.llvm }}
+          path: |
+            remill-v6.0.1-linux-x86_64-llvm${{ matrix.llvm }}.tar.gz
+            remill-v6.0.1-linux-x86_64-llvm${{ matrix.llvm }}.tar.gz.sha256
+
+  release:
+    needs: linux
+    if: ${{ github.repository_owner == 'tgwsaki-meow' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: remill-v6.0.1-*
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v6.0.1-linux-prebuilt
+          target_commitish: ${{ github.sha }}
+          name: "Remill v6.0.1 Linux Precompiled Release (Rootless / Standalone)"
+          draft: false
+          prerelease: false
+          body: |
+            ## Remill v6.0.1 Linux Precompiled Standalone Release (无需 Root)
+
+            Portable precompiled binary release of Remill for Linux x86_64 built from [tgwsaki-meow/remill](https://github.com/tgwsaki-meow/remill) (forked from [lifting-bits/remill](https://github.com/lifting-bits/remill)).
+
+            ### Highlights
+            - **Rootless & Standalone**: No root permissions required. Extract and run anywhere.
+            - **Bundled Semantics**: Includes semantics bitcode for `x86`, `amd64`, `aarch64`, `aarch32`, `sparc32`, `sparc64`.
+            - **Bundled Sleigh Specs**: Includes Ghidra Sleigh processor specifications.
+            - **Automatic Path Resolution**: Automatically resolves semantics and Sleigh specs relative to executable location.
+            - **Customizable**: Supports `--semantics_dir <path>` argument and `REMILL_SEMANTICS_DIR` / `SLEIGH_SPEC_DIR` environment variables.
+
+            ### Quick Start
+            ```bash
+            tar -xzf remill-v6.0.1-linux-x86_64-llvm20.tar.gz
+            cd remill-v6.0.1-linux-x86_64-llvm20
+            ./bin/remill-lift --arch amd64 --ir_out lifted.ll --bytes c704ba01000000
+            ```
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+
   nix:
     if: ${{ github.repository == 'lifting-bits/remill' && (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) }}
     strategy:
@@ -111,10 +209,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        uses: actions/checkout@v4
 
       - name: Install Nix
-        uses: cachix/install-nix-action@4e002c8ec80594ecd40e759629461e26c8abed15 # v31
+        uses: cachix/install-nix-action@v31
 
       - name: Build remill (LLVM ${{ matrix.llvm }})
         run: nix build .#remill-llvm${{ matrix.llvm }}
@@ -126,19 +224,15 @@ jobs:
           ./result/bin/remill-lift-${{ matrix.llvm }} --arch aarch32 --ir_out /dev/stderr --bytes 0cd04de208008de504108de500208de508309de504009de500109de5903122e0c20fa0e110109fe5001091e5002081e5040081e50cd08de21eff2fe14000000000000000
 
   macos:
-    # Skip building pull requests from the same repository
-    if: ${{ github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) }}
+    if: ${{ github.repository == 'lifting-bits/remill' && (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) }}
     runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
         llvm:
-          - "17"
           - "18"
-          - "19"
           - "20"
           - "21"
-          - "22"
     steps:
       - name: Install LLVM
         run: |
@@ -149,7 +243,7 @@ jobs:
           echo "CXX=clang++" >> $GITHUB_ENV
 
       - name: Checkout
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        uses: actions/checkout@v4
 
       - name: Build dependencies
         run: |

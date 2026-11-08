@@ -21,9 +21,31 @@
 #include <remill/Arch/Name.h>
 #include <remill/BC/SleighLifter.h>
 
+#include <cstdlib>
+#include <system_error>
+#include <vector>
+
 namespace remill::sleigh {
 
 namespace {
+
+std::vector<std::filesystem::path> GetFallbackSleighSearchPaths() {
+  std::vector<std::filesystem::path> extra_paths;
+  if (const char *env = std::getenv("SLEIGH_SPEC_DIR")) {
+    extra_paths.push_back(env);
+  }
+#ifndef _WIN32
+  std::error_code ec;
+  auto exe_path = std::filesystem::canonical("/proc/self/exe", ec);
+  if (!ec) {
+    auto install_root = exe_path.parent_path().parent_path();
+    extra_paths.push_back(install_root / "share" / "sleigh" / "specfiles");
+    extra_paths.push_back(install_root / "share" / "sleigh");
+    extra_paths.push_back(exe_path.parent_path() / "share" / "sleigh" / "specfiles");
+  }
+#endif
+  return extra_paths;
+}
 
 class InstructionFunctionSetter : public AssemblyEmit {
  private:
@@ -89,8 +111,11 @@ SingleInstructionSleighContext::SingleInstructionSleighContext(
 
   auto guard = Arch::Lock(ArchName::kArchX86_SLEIGH);
 
-  const std::optional<std::filesystem::path> sla_path =
+  std::optional<std::filesystem::path> sla_path =
       ::sleigh::FindSpecFile(sla_name.c_str());
+  if (!sla_path) {
+    sla_path = ::sleigh::FindSpecFile(sla_name.c_str(), GetFallbackSleighSearchPaths());
+  }
   if (!sla_path) {
     LOG(FATAL) << "Couldn't find required spec file: " << sla_name << '\n';
   }
@@ -101,7 +126,9 @@ SingleInstructionSleighContext::SingleInstructionSleighContext(
 
 
   auto pspec_path = ::sleigh::FindSpecFile(pspec_name.c_str());
-
+  if (!pspec_path) {
+    pspec_path = ::sleigh::FindSpecFile(pspec_name.c_str(), GetFallbackSleighSearchPaths());
+  }
   if (!pspec_path) {
     LOG(FATAL) << "Couldn't find required pspec file: " << pspec_name << '\n';
   }

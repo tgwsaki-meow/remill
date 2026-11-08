@@ -17,6 +17,7 @@
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 
+#include <cstdlib>
 #include <filesystem>
 #include <sstream>
 #include <system_error>
@@ -597,18 +598,35 @@ namespace {
 using paths_t = std::vector<std::filesystem::path>;
 
 const paths_t &DefaultSemanticsSearchPaths() {
-  static const paths_t paths = {
-      REMILL_BUILD_SEMANTICS_DIR_X86,
-      REMILL_BUILD_SEMANTICS_DIR_AARCH32,
-      REMILL_BUILD_SEMANTICS_DIR_AARCH64,
-      REMILL_BUILD_SEMANTICS_DIR_SPARC32,
-      REMILL_BUILD_SEMANTICS_DIR_SPARC64,
-      REMILL_BUILD_SEMANTICS_DIR_PPC64_32ADDR,
-      REMILL_INSTALL_SEMANTICS_DIR,
-      "/usr/local/share/remill/" MAJOR_MINOR "/semantics",
-      "/usr/share/remill/" MAJOR_MINOR "/semantics",
-      "/share/remill/" MAJOR_MINOR "/semantics",
-  };
+  static const paths_t paths = [] {
+    paths_t p;
+    if (const char *env = std::getenv("REMILL_SEMANTICS_DIR")) {
+      p.push_back(env);
+    }
+#ifndef _WIN32
+    std::error_code ec;
+    auto exe_path = std::filesystem::canonical("/proc/self/exe", ec);
+    if (!ec) {
+      auto install_root = exe_path.parent_path().parent_path();
+      p.push_back(install_root / "share" / "remill" / S(LLVM_VERSION_MAJOR) / "semantics");
+      p.push_back(install_root / "share" / "remill" / MAJOR_MINOR / "semantics");
+      p.push_back(install_root / "share" / "remill" / "semantics");
+      p.push_back(exe_path.parent_path() / "semantics");
+      p.push_back(exe_path.parent_path() / "share" / "remill" / S(LLVM_VERSION_MAJOR) / "semantics");
+    }
+#endif
+    p.push_back(REMILL_BUILD_SEMANTICS_DIR_X86);
+    p.push_back(REMILL_BUILD_SEMANTICS_DIR_AARCH32);
+    p.push_back(REMILL_BUILD_SEMANTICS_DIR_AARCH64);
+    p.push_back(REMILL_BUILD_SEMANTICS_DIR_SPARC32);
+    p.push_back(REMILL_BUILD_SEMANTICS_DIR_SPARC64);
+    p.push_back(REMILL_BUILD_SEMANTICS_DIR_PPC64_32ADDR);
+    p.push_back(REMILL_INSTALL_SEMANTICS_DIR);
+    p.push_back("/usr/local/share/remill/" MAJOR_MINOR "/semantics");
+    p.push_back("/usr/share/remill/" MAJOR_MINOR "/semantics");
+    p.push_back("/share/remill/" MAJOR_MINOR "/semantics");
+    return p;
+  }();
   return paths;
 }
 
