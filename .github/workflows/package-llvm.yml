@@ -61,21 +61,28 @@ jobs:
             cp -r "${LLVM_DIR}/share" "dist/${DIST_NAME}/"
           fi
 
-          # Copy actual shared libraries from x86_64-linux-gnu dereferenced
-          for lib in /usr/lib/x86_64-linux-gnu/libLLVM*.so* /usr/lib/x86_64-linux-gnu/libclang*.so*; do
-            if [ -e "$lib" ]; then
-              cp -aL "$lib" "dist/${DIST_NAME}/lib/" || true
+          # Use ldd to find and copy all required libraries for the tools
+          for bin in dist/${DIST_NAME}/bin/*; do
+            if [ -f "$bin" ] && [ ! -L "$bin" ] && file "$bin" | grep -q "ELF"; then
+              for dep in $(ldd "$bin" 2>/dev/null | grep -E "=> (/[^ ]+)" | awk '{print $3}'); do
+                if [ -e "$dep" ]; then
+                  base_dep=$(basename "$dep")
+                  if [[ "$base_dep" != libc.so* && "$base_dep" != libm.so* && "$base_dep" != libpthread.so* && "$base_dep" != libdl.so* ]]; then
+                    cp -aL "$dep" "dist/${DIST_NAME}/lib/" || true
+                  fi
+                fi
+              done
             fi
           done
 
           # Clean up any dangling relative symlinks and recreate local links
           cd "dist/${DIST_NAME}/lib"
-          for so in libLLVM*.so*; do
+          for so in *; do
             if [ -L "$so" ] && [ ! -e "$so" ]; then
               rm -f "$so"
             fi
           done
-          REAL_LIBLLVM=$(ls -1 libLLVM* 2>/dev/null | grep -v '\.a$' | grep -E 'libLLVM.*\.so\.[0-9]+' | head -n 1)
+          REAL_LIBLLVM=$(ls -1 libLLVM* 2>/dev/null | grep -v '\.a$' | grep -E "libLLVM.*${{ matrix.llvm }}" | head -n 1)
           if [ -n "$REAL_LIBLLVM" ]; then
             ln -sf "$REAL_LIBLLVM" libLLVM.so
             ln -sf "$REAL_LIBLLVM" libLLVM.so.1
@@ -167,6 +174,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v6.0.1-linux-prebuilt
+          target_commitish: ${{ github.sha }}
+          overwrite: true
           files: |
             dist/*.tar.gz
             dist/*.sha256
