@@ -61,6 +61,28 @@ jobs:
             cp -r "${LLVM_DIR}/share" "dist/${DIST_NAME}/"
           fi
 
+          # Copy actual shared libraries from x86_64-linux-gnu dereferenced
+          for lib in /usr/lib/x86_64-linux-gnu/libLLVM*.so* /usr/lib/x86_64-linux-gnu/libclang*.so*; do
+            if [ -e "$lib" ]; then
+              cp -aL "$lib" "dist/${DIST_NAME}/lib/" || true
+            fi
+          done
+
+          # Clean up any dangling relative symlinks and recreate local links
+          cd "dist/${DIST_NAME}/lib"
+          for so in libLLVM*.so*; do
+            if [ -L "$so" ] && [ ! -e "$so" ]; then
+              rm -f "$so"
+            fi
+          done
+          REAL_LIBLLVM=$(ls -1 libLLVM* 2>/dev/null | grep -v '\.a$' | grep -E 'libLLVM.*\.so\.[0-9]+' | head -n 1)
+          if [ -n "$REAL_LIBLLVM" ]; then
+            ln -sf "$REAL_LIBLLVM" libLLVM.so
+            ln -sf "$REAL_LIBLLVM" libLLVM.so.1
+            ln -sf "$REAL_LIBLLVM" "libLLVM-${{ matrix.llvm }}.so"
+          fi
+          cd -
+
           # Ensure unversioned symlinks exist for all tools
           cd "dist/${DIST_NAME}/bin"
           for f in *-${{ matrix.llvm }}; do
