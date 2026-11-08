@@ -45,6 +45,7 @@ tools/remill_disass/CFG_pb2.py
 .venv/
 dist/*
 remill_disass.egg-info/*
+prebuilt_releases/
 
 *.o
 *.ll

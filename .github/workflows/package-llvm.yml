@@ -1,0 +1,150 @@
+name: Package Portable LLVM
+on:
+  push:
+    paths:
+      - '.github/workflows/package-llvm.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package-llvm:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        llvm:
+          - "20"
+          - "18"
+    steps:
+      - name: Install build tools and patchelf
+        run: |
+          sudo apt update
+          sudo apt install -y --no-install-recommends \
+            wget \
+            lsb-release \
+            software-properties-common \
+            gnupg \
+            patchelf \
+            file \
+            tar \
+            gzip
+
+      - name: Install LLVM ${{ matrix.llvm }}
+        run: |
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh ${{ matrix.llvm }} all
+          sudo apt update
+          sudo apt install -y --no-install-recommends \
+            llvm-${{ matrix.llvm }} \
+            llvm-${{ matrix.llvm }}-tools \
+            llvm-${{ matrix.llvm }}-dev \
+            clang-${{ matrix.llvm }} \
+            lld-${{ matrix.llvm }}
+
+      - name: Package portable LLVM distribution
+        run: |
+          LLVM_DIR="/usr/lib/llvm-${{ matrix.llvm }}"
+          DIST_NAME="llvm-v${{ matrix.llvm }}-linux-x86_64-portable"
+          mkdir -p "dist/${DIST_NAME}"
+
+          # Copy entire llvm tree (bin, lib, include, share)
+          cp -r "${LLVM_DIR}/bin" "dist/${DIST_NAME}/"
+          cp -r "${LLVM_DIR}/lib" "dist/${DIST_NAME}/"
+          if [ -d "${LLVM_DIR}/include" ]; then
+            cp -r "${LLVM_DIR}/include" "dist/${DIST_NAME}/"
+          fi
+          if [ -d "${LLVM_DIR}/share" ]; then
+            cp -r "${LLVM_DIR}/share" "dist/${DIST_NAME}/"
+          fi
+
+          # Ensure unversioned symlinks exist for all tools
+          cd "dist/${DIST_NAME}/bin"
+          for f in *-${{ matrix.llvm }}; do
+            if [ -f "$f" ]; then
+              base="${f%-${{ matrix.llvm }}}"
+              if [ ! -e "$base" ]; then
+                ln -sf "$f" "$base"
+              fi
+            fi
+          done
+          cd -
+
+          # Patch RPATH on all binaries and shared libraries
+          echo "Patching RPATH on binaries..."
+          for f in dist/${DIST_NAME}/bin/*; do
+            if [ -f "$f" ] && [ ! -L "$f" ] && file "$f" | grep -q "ELF"; then
+              patchelf --set-rpath '$ORIGIN/../lib' "$f" || true
+            fi
+          done
+
+          echo "Patching RPATH on libraries..."
+          for f in dist/${DIST_NAME}/lib/*.so*; do
+            if [ -f "$f" ] && [ ! -L "$f" ] && file "$f" | grep -q "ELF"; then
+              patchelf --set-rpath '$ORIGIN' "$f" || true
+            fi
+          done
+
+          # Bundle essential runtime support libs
+          for lib in /usr/lib/x86_64-linux-gnu/libtinfo.so.6* /usr/lib/x86_64-linux-gnu/libzstd.so.1* /usr/lib/x86_64-linux-gnu/libxml2.so.2*; do
+            if [ -e "$lib" ]; then
+              cp -d "$lib" dist/${DIST_NAME}/lib/ || true
+            fi
+          done
+
+          # Create archive
+          tar -czvf "${DIST_NAME}.tar.gz" -C dist "${DIST_NAME}"
+          sha256sum "${DIST_NAME}.tar.gz" > "${DIST_NAME}.tar.gz.sha256"
+
+      - name: Verify all required tools in unprivileged path
+        run: |
+          DIST_NAME="llvm-v${{ matrix.llvm }}-linux-x86_64-portable"
+          mkdir -p /tmp/test-unprivileged
+          tar -xzf "${DIST_NAME}.tar.gz" -C /tmp/test-unprivileged
+          BIN="/tmp/test-unprivileged/${DIST_NAME}/bin"
+
+          echo "=== Testing required tools ==="
+          $BIN/opt --version
+          $BIN/llc --version
+          $BIN/llvm-as --version
+          $BIN/llvm-dis --version
+          $BIN/llvm-link --version
+          $BIN/llvm-objdump --version
+          $BIN/llvm-mc --version
+
+          echo "=== Optional tools check ==="
+          if [ -f "$BIN/clang" ]; then $BIN/clang --version; fi
+          if [ -f "$BIN/lld" ]; then $BIN/lld --version || true; fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llvm-v${{ matrix.llvm }}-linux-x86_64-portable
+          path: |
+            llvm-v${{ matrix.llvm }}-linux-x86_64-portable.tar.gz
+            llvm-v${{ matrix.llvm }}-linux-x86_64-portable.tar.gz.sha256
+
+  release:
+    needs: package-llvm
+    if: ${{ github.repository_owner == 'tgwsaki-meow' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: llvm-v*-linux-x86_64-portable
+          merge-multiple: true
+
+      - name: Update GitHub Release with LLVM packages
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v6.0.1-linux-prebuilt
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
