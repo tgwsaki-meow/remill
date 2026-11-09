@@ -81,55 +81,62 @@ jobs:
             fi
           done
 
-          # 3. Use ldd to find and copy all required libraries for the tools
+          # 3. Use ldd from original system binaries to find and copy all required dependencies
           echo "Resolving dependencies for all binaries..."
-          for bin in dist/${DIST_NAME}/bin/*; do
-            if [ -f "$bin" ] && file "$bin" | grep -q "ELF"; then
-              for dep in $(ldd "$bin" 2>/dev/null | grep -E "=> (/[^ ]+)" | awk '{print $3}'); do
-                if [ -e "$dep" ]; then
-                  base_dep=$(basename "$dep")
-                  if [[ "$base_dep" != libc.so* && "$base_dep" != libm.so* && "$base_dep" != libpthread.so* && "$base_dep" != libdl.so* ]]; then
-                    rm -f "dist/${DIST_NAME}/lib/${base_dep}"
-                    cp -aL "$dep" "dist/${DIST_NAME}/lib/" || true
-                  fi
+          for dep in $(LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:${LLVM_DIR}/lib" ldd "${LLVM_DIR}/bin/"* 2>/dev/null | grep -E "=> (/[^ ]+)" | awk '{print $3}' | sort -u); do
+            if [ -e "$dep" ]; then
+              base_dep=$(basename "$dep")
+              if [[ "$base_dep" != libc.so* && "$base_dep" != libm.so* && "$base_dep" != libpthread.so* && "$base_dep" != libdl.so* ]]; then
+                if [[ "$dep" != *"dist/"* ]]; then
+                  rm -f "dist/${DIST_NAME}/lib/${base_dep}"
+                  cp -aL "$dep" "dist/${DIST_NAME}/lib/" || true
                 fi
-              done
+              fi
             fi
           done
 
-          # 4. Create all symlinks for libLLVM
+          # 4. Find the real libLLVM regular file in dist/lib
           cd "dist/${DIST_NAME}/lib"
-          REAL_LIBLLVM=$(ls -1 libLLVM* 2>/dev/null | grep -v '\.a$' | grep -E "libLLVM.*${{ matrix.llvm }}" | head -n 1)
-          if [ -z "$REAL_LIBLLVM" ]; then
-            REAL_LIBLLVM=$(ls -1 libLLVM*.so* 2>/dev/null | grep -v '\.a$' | head -n 1)
-          fi
+          REAL_LIBLLVM=$(find . -maxdepth 1 -type f -name 'libLLVM*.so*' -printf "%f\n" | head -n 1)
           echo "Primary REAL_LIBLLVM file: $REAL_LIBLLVM"
-          if [ -n "$REAL_LIBLLVM" ]; then
-            ln -sf "$REAL_LIBLLVM" libLLVM.so
-            ln -sf "$REAL_LIBLLVM" libLLVM.so.1
-            ln -sf "$REAL_LIBLLVM" "libLLVM.so.${{ matrix.llvm }}.1"
-            ln -sf "$REAL_LIBLLVM" "libLLVM-${{ matrix.llvm }}.so"
-            ln -sf "$REAL_LIBLLVM" "libLLVM-${{ matrix.llvm }}.so.1"
-            ln -sf "$REAL_LIBLLVM" "libLLVM-${{ matrix.llvm }}.1.8.so.1" 2>/dev/null || true
-          else
-            echo "ERROR: Failed to find any real libLLVM in dist/${DIST_NAME}/lib!"
+          if [ -z "$REAL_LIBLLVM" ]; then
+            echo "ERROR: Failed to find any real libLLVM file in dist/${DIST_NAME}/lib!"
             ls -la
             exit 1
           fi
           cd -
 
-          # 5. Fix any dangling symlinks in nested directories (such as lldb python modules)
-          find "dist/${DIST_NAME}" -name "libLLVM*.so*" -type l | while read -r linkfile; do
-            if [ ! -e "$linkfile" ]; then
-              rm -f "$linkfile"
-              if [ -n "$REAL_LIBLLVM" ]; then
-                rel_path=$(python3 -c "import os.path; print(os.path.relpath('dist/${DIST_NAME}/lib/${REAL_LIBLLVM}', os.path.dirname('$linkfile')))")
-                ln -sf "$rel_path" "$linkfile"
-              fi
+          # 5. Automatically create symlinks for whatever DT_NEEDED name each binary expects
+          for bin in dist/${DIST_NAME}/bin/*; do
+            if [ -f "$bin" ] && file "$bin" | grep -q "ELF"; then
+              for req in $(patchelf --print-needed "$bin" 2>/dev/null | grep "^libLLVM" || true); do
+                if [ ! -e "dist/${DIST_NAME}/lib/$req" ] && [ -n "$REAL_LIBLLVM" ]; then
+                  echo "Creating needed link: dist/${DIST_NAME}/lib/$req -> $REAL_LIBLLVM"
+                  ln -sf "$REAL_LIBLLVM" "dist/${DIST_NAME}/lib/$req"
+                fi
+              done
             fi
           done
 
-          # 6. Ensure unversioned symlinks exist for all tools
+          # 6. Create standard convenience symlinks in lib/
+          cd "dist/${DIST_NAME}/lib"
+          for alias in "libLLVM.so" "libLLVM.so.1" "libLLVM.so.${{ matrix.llvm }}.1" "libLLVM-${{ matrix.llvm }}.so" "libLLVM-${{ matrix.llvm }}.so.1"; do
+            if [ "$alias" != "$REAL_LIBLLVM" ] && [ ! -e "$alias" ]; then
+              ln -sf "$REAL_LIBLLVM" "$alias"
+            fi
+          done
+          cd -
+
+          # 7. Fix any dangling symlinks in nested directories (such as lldb python modules)
+          find "dist/${DIST_NAME}" -name "libLLVM*.so*" -type l | while read -r linkfile; do
+            if [ ! -e "$linkfile" ]; then
+              rm -f "$linkfile"
+              rel_path=$(python3 -c "import os.path; print(os.path.relpath('dist/${DIST_NAME}/lib/${REAL_LIBLLVM}', os.path.dirname('$linkfile')))")
+              ln -sf "$rel_path" "$linkfile"
+            fi
+          done
+
+          # 8. Ensure unversioned symlinks exist for all tools
           cd "dist/${DIST_NAME}/bin"
           for f in *-${{ matrix.llvm }}; do
             if [ -f "$f" ]; then
@@ -141,7 +148,7 @@ jobs:
           done
           cd -
 
-          # 7. Patch RPATH on all binaries and shared libraries
+          # 9. Patch RPATH on all binaries and shared libraries
           echo "Patching RPATH on binaries..."
           for f in dist/${DIST_NAME}/bin/*; do
             if [ -f "$f" ] && [ ! -L "$f" ] && file "$f" | grep -q "ELF"; then
@@ -156,7 +163,7 @@ jobs:
             fi
           done
 
-          # 8. Bundle essential runtime support libs
+          # 10. Bundle essential runtime support libs
           for lib in /usr/lib/x86_64-linux-gnu/libtinfo.so.6* /usr/lib/x86_64-linux-gnu/libzstd.so.1* /usr/lib/x86_64-linux-gnu/libxml2.so.2*; do
             if [ -e "$lib" ]; then
               rm -f "dist/${DIST_NAME}/lib/$(basename "$lib")"
@@ -164,10 +171,10 @@ jobs:
             fi
           done
 
-          # 9. Clean up any remaining dangling links
+          # 11. Clean up any remaining dangling links
           find "dist/${DIST_NAME}" -xtype l -delete
 
-          # 10. Create archive
+          # 12. Create archive
           tar -czvf "${DIST_NAME}.tar.gz" -C dist "${DIST_NAME}"
           sha256sum "${DIST_NAME}.tar.gz" > "${DIST_NAME}.tar.gz.sha256"
 
