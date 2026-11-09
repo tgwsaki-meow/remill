@@ -25,6 +25,12 @@
 #include <system_error>
 #include <vector>
 
+#ifdef _WIN32
+#  define WIN32_LEAN_AND_MEAN
+#  define NOMINMAX
+#  include <windows.h>
+#endif
+
 namespace remill::sleigh {
 
 namespace {
@@ -34,7 +40,20 @@ std::vector<std::filesystem::path> GetFallbackSleighSearchPaths() {
   if (const char *env = std::getenv("SLEIGH_SPEC_DIR")) {
     extra_paths.push_back(env);
   }
-#ifndef _WIN32
+#ifdef _WIN32
+  wchar_t exe_buf[MAX_PATH];
+  DWORD len = GetModuleFileNameW(NULL, exe_buf, MAX_PATH);
+  if (len > 0 && len < MAX_PATH) {
+    std::error_code ec;
+    auto exe_path = std::filesystem::canonical(exe_buf, ec);
+    if (!ec) {
+      auto install_root = exe_path.parent_path().parent_path();
+      extra_paths.push_back(install_root / "share" / "sleigh" / "specfiles");
+      extra_paths.push_back(install_root / "share" / "sleigh");
+      extra_paths.push_back(exe_path.parent_path() / "share" / "sleigh" / "specfiles");
+    }
+  }
+#else
   std::error_code ec;
   auto exe_path = std::filesystem::canonical("/proc/self/exe", ec);
   if (!ec) {

@@ -25,7 +25,11 @@
 #include <utility>
 #include <vector>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#  define WIN32_LEAN_AND_MEAN
+#  define NOMINMAX
+#  include <windows.h>
+#else
 #  include <sys/stat.h>
 #  include <unistd.h>
 #endif  // _WIN32
@@ -59,16 +63,12 @@
 #include "remill/OS/FileSystem.h"
 
 namespace {
-#ifdef _WIN32
-extern "C" std::uint32_t GetProcessId(std::uint32_t handle);
-#endif  // _WIN32
-
 // We are avoiding the `getpid` name here to make sure we don't
 // conflict with the (deprecated) getpid function from the Windows
 // ucrt headers
 std::uint32_t nativeGetProcessID(void) {
 #ifdef _WIN32
-  return GetProcessId(0);
+  return static_cast<std::uint32_t>(GetCurrentProcessId());
 #else
   return getpid();
 #endif  // _WIN32
@@ -603,7 +603,22 @@ const paths_t &DefaultSemanticsSearchPaths() {
     if (const char *env = std::getenv("REMILL_SEMANTICS_DIR")) {
       p.push_back(env);
     }
-#ifndef _WIN32
+#ifdef _WIN32
+    wchar_t exe_buf[MAX_PATH];
+    DWORD len = GetModuleFileNameW(NULL, exe_buf, MAX_PATH);
+    if (len > 0 && len < MAX_PATH) {
+      std::error_code ec;
+      auto exe_path = std::filesystem::canonical(exe_buf, ec);
+      if (!ec) {
+        auto install_root = exe_path.parent_path().parent_path();
+        p.push_back(install_root / "share" / "remill" / S(LLVM_VERSION_MAJOR) / "semantics");
+        p.push_back(install_root / "share" / "remill" / MAJOR_MINOR / "semantics");
+        p.push_back(install_root / "share" / "remill" / "semantics");
+        p.push_back(exe_path.parent_path() / "semantics");
+        p.push_back(exe_path.parent_path() / "share" / "remill" / S(LLVM_VERSION_MAJOR) / "semantics");
+      }
+    }
+#else
     std::error_code ec;
     auto exe_path = std::filesystem::canonical("/proc/self/exe", ec);
     if (!ec) {

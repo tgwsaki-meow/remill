@@ -23,13 +23,21 @@ set(DEFAULT_BC_COMPILER_FLAGS
   -std=c++17
 )
 
-get_target_property(LLVMLINK_PATH llvm-link LOCATION)
-if(NOT EXISTS "${LLVMLINK_PATH}")
-  message(FATAL_ERROR "llvm-link not found")
+if(TARGET llvm-link)
+  get_target_property(LLVMLINK_PATH llvm-link LOCATION)
+endif()
+if(NOT LLVMLINK_PATH OR NOT EXISTS "${LLVMLINK_PATH}")
+  find_program(LLVMLINK_PATH NAMES llvm-link PATHS "${LLVM_TOOLS_BINARY_DIR}" "${LLVM_DIR}/../../../bin" NO_DEFAULT_PATH)
+endif()
+if(NOT LLVMLINK_PATH OR NOT EXISTS "${LLVMLINK_PATH}")
+  find_program(LLVMLINK_PATH NAMES llvm-link REQUIRED)
 endif()
 
-get_filename_component(LLVMLINK_PATH_DIR ${LLVMLINK_PATH} DIRECTORY)
-find_program(CLANG_PATH NAMES clang++ clang PATHS ${LLVMLINK_PATH_DIR} NO_DEFAULT_PATH REQUIRED)
+get_filename_component(LLVMLINK_PATH_DIR "${LLVMLINK_PATH}" DIRECTORY)
+find_program(CLANG_PATH NAMES clang++ clang PATHS "${LLVMLINK_PATH_DIR}" "${LLVM_TOOLS_BINARY_DIR}" NO_DEFAULT_PATH)
+if(NOT CLANG_PATH)
+  find_program(CLANG_PATH NAMES clang++ clang REQUIRED)
+endif()
 
 file(WRITE "${CMAKE_BINARY_DIR}/emitllvm.test.cpp" "int main(int argc, char* argv[]){return 0;}\n\n")
 
