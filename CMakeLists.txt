@@ -40,15 +40,33 @@ find_package(LLVM CONFIG REQUIRED)
 if(LLVM_LINK_LLVM_DYLIB)
   set(llvm_libs LLVM)
 else()
-  llvm_map_components_to_libnames(llvm_libs
+  set(llvm_components
     support core irreader
     bitreader bitwriter
     passes asmprinter
-    aarch64info aarch64desc aarch64codegen aarch64asmparser
-    armcodegen armasmparser
     interpreter mcjit
-    x86info x86codegen x86asmparser
-    sparccodegen sparcasmparser)
+  )
+  if(NOT DEFINED LLVM_TARGETS_TO_BUILD)
+    list(APPEND llvm_components
+      x86info x86codegen x86asmparser
+      aarch64info aarch64desc aarch64codegen aarch64asmparser
+      armcodegen armasmparser
+    )
+  else()
+    if("X86" IN_LIST LLVM_TARGETS_TO_BUILD)
+      list(APPEND llvm_components x86info x86codegen x86asmparser)
+    endif()
+    if("AArch64" IN_LIST LLVM_TARGETS_TO_BUILD)
+      list(APPEND llvm_components aarch64info aarch64desc aarch64codegen aarch64asmparser)
+    endif()
+    if("ARM" IN_LIST LLVM_TARGETS_TO_BUILD)
+      list(APPEND llvm_components armcodegen armasmparser)
+    endif()
+    if("Sparc" IN_LIST LLVM_TARGETS_TO_BUILD)
+      list(APPEND llvm_components sparccodegen sparcasmparser)
+    endif()
+  endif()
+  llvm_map_components_to_libnames(llvm_libs ${llvm_components})
 endif()
 message(STATUS "LLVM Libraries: ${llvm_libs}")
 
