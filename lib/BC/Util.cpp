@@ -26,9 +26,9 @@
 #include <vector>
 
 #ifdef _WIN32
-#  define WIN32_LEAN_AND_MEAN
-#  define NOMINMAX
-#  include <windows.h>
+extern "C" __declspec(dllimport) unsigned long __stdcall GetModuleFileNameW(
+    void *hModule, wchar_t *lpFilename, unsigned long nSize);
+extern "C" __declspec(dllimport) unsigned long __stdcall GetCurrentProcessId(void);
 #else
 #  include <sys/stat.h>
 #  include <unistd.h>
@@ -604,9 +604,9 @@ const paths_t &DefaultSemanticsSearchPaths() {
       p.push_back(env);
     }
 #ifdef _WIN32
-    wchar_t exe_buf[MAX_PATH];
-    DWORD len = GetModuleFileNameW(NULL, exe_buf, MAX_PATH);
-    if (len > 0 && len < MAX_PATH) {
+    wchar_t exe_buf[1024];
+    auto len = GetModuleFileNameW(nullptr, exe_buf, 1024);
+    if (len > 0 && len < 1024) {
       std::error_code ec;
       auto exe_path = std::filesystem::canonical(exe_buf, ec);
       if (!ec) {
