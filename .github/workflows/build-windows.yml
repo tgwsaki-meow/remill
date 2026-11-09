@@ -74,6 +74,22 @@ jobs:
           "LLVM_DIR=D:/llvm/lib/cmake/llvm" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "LLVM_PREFIX=D:/llvm" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+          # Fix LLVM DIA SDK hardcoded path from official LLVM buildbot
+          $dia = Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio" -Filter "diaguids.lib" -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.FullName -like "*amd64*" } | Select-Object -First 1
+          if ($dia) {
+              Write-Host "Found DIA SDK diaguids.lib at: $($dia.FullName)"
+              $fakeDir = "C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\DIA SDK\lib\amd64"
+              New-Item -ItemType Directory -Path $fakeDir -Force -ErrorAction SilentlyContinue
+              Copy-Item $dia.FullName "$fakeDir\diaguids.lib" -Force -ErrorAction SilentlyContinue
+
+              $realDiaPath = $dia.FullName.Replace('\', '/')
+              Get-ChildItem -Path "D:\llvm\lib\cmake\llvm\*.cmake" | ForEach-Object {
+                  (Get-Content $_.FullName) -replace 'C:/Program Files \(x86\)/Microsoft Visual Studio/2019/Professional/DIA SDK/lib/amd64/diaguids.lib', $realDiaPath | Set-Content $_.FullName
+              }
+          } else {
+              Write-Host "Warning: diaguids.lib not found under Microsoft Visual Studio"
+          }
+
       - name: Verify build environment
         shell: pwsh
         run: |
